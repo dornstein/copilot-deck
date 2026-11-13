@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "Copilot Status",
+  "UUID": "com.davidorn.copilot-status",
+  "Author": "David Ornstein",
+  "Description": "Shows live VS Code Copilot sessions on Stream Deck, including sessions on a remote machine connected through Dev Tunnels.",
+  "Version": "0.2.0.0",
+  "CodePath": "plugin.cjs",
+  "Icon": "images/plugin",
+  "Category": "Copilot",
+  "CategoryIcon": "images/action",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.8" },
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "Nodejs": { "Version": "20" },
+  "Profiles": [
+    { "Name": "Copilot Sessions", "DeviceType": 0, "DontAutoSwitchWhenInstalled": true }
+  ],
+  "Actions": [
+    {
+      "Name": "Copilot Session Status",
+      "UUID": "com.davidorn.copilot-status.session",
+      "Icon": "images/action",
+      "Tooltip": "Follows the most recently updated local Copilot session in VS Code.",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "images/offline", "Title": "Offline", "TitleAlignment": "bottom", "FontSize": 11 }]
+    },
+    {
+      "Name": "Copilot Session Slot",
+      "UUID": "com.davidorn.copilot-status.slot",
+      "Icon": "images/action",
+      "VisibleInActionsList": false,
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "images/empty", "TitleAlignment": "bottom", "FontSize": 10 }]
+    },
+    {
+      "Name": "More",
+      "UUID": "com.davidorn.copilot-status.more",
+      "PropertyInspectorPath": "tunnel-settings.html",
+      "Icon": "images/action",
+      "VisibleInActionsList": false,
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "images/empty", "Title": "More", "TitleAlignment": "middle", "FontSize": 11 }]
+    }
+  ]
+}
