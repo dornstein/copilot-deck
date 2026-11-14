@@ -1,52 +1,64 @@
 # Copilot Status for Stream Deck
 
-## Install
+See which VS Code Copilot chats are running or waiting for you, and press a Stream Deck key to open the chat. The **Copilot Sessions** profile shows chats from this PC and from one remote machine connected through a Dev Tunnel.
 
-Download `com.davidorn.copilot-status.streamDeckPlugin` from [GitHub Releases](https://github.com/dornstein/copilot-deck/releases/latest) and double-click it to install. The plugin requires Windows 10 or later, Stream Deck 6.8 or later, and a version of VS Code with the Copilot Agent Host. Select **Copilot Sessions** in Stream Deck after installation.
+## Install and get started
 
-## Use the profile
+You need Windows 10 or later, Stream Deck 6.8 or later, and a version of VS Code or VS Code Insiders with the Agents window and Copilot harness.
 
-**Copilot Sessions** is a bundled profile for the standard 15-key Stream Deck. Select it in the profile picker or open `Copilot Sessions.streamDeckProfile` from the plugin folder to import it once. Thirteen keys show main and nested chats, one per key. The bottom-right **More** key cycles through chat banks, and the bottom-left **Manage** key switches to commands.
+1. Download `com.davidorn.copilot-status.streamDeckPlugin` and double-click it to install. [GitHub Releases](https://github.com/dornstein/copilot-deck/releases/latest)
+2. In the Stream Deck desktop app, select **Copilot Sessions** from the profile picker. The bundled profile fits a 15-key layout. If it doesn’t appear, import `Copilot Sessions.streamDeckProfile` from `%APPDATA%\Elgato\StreamDeck\Plugins\com.davidorn.copilot-status.sdPlugin`.
+3. Open the **Agents** window in VS Code and start or resume a chat using the **Copilot** harness. Leave VS Code running. The chat should appear on a key.
 
-Tap a chat key to open that chat in VS Code's Agents window on this PC. For a remote chat, connect to the same tunnel once in the Agents window so VS Code can find the remote session when it opens.
+For a single status key on your own profile, add **Copilot → Copilot Session Status**. It follows the most recently updated local Copilot session.
 
-Hold a chat key for about half a second, then release to flip it to its details. The details stay visible until you long-press again or the chat leaves the key. The back shows **This PC** or the remote tunnel's name, plus the workspace and chat type when available. If the tunnel name is unavailable, the back shows **Remote**.
+## Use the keys
 
-Chat titles wrap and use smaller text as needed. A key pulses blue while its chat is running and red with a speech bubble while it needs input. The upper-left corner shows a warning triangle for an error, an hourglass for starting, a plug for offline, and a question mark for unknown status. An idle chat shows a blue dot when unread and its idle age along the top when available. The age starts at the observed transition to idle or uses the chat's last modification time for chats that were already idle.
+- **Tap a chat** to open it in VS Code’s Agents window. A blue pulse means the chat is running. A red pulse with a speech bubble means it needs input. On an idle chat, a blue dot means unread and the time shows how long the chat has been idle, when available.
+- **Hold a chat key for about half a second and release** to see which machine it’s on, plus its workspace and chat type when available. Repeat to return to the title.
+- **Press More** in the bottom-right corner to see the next page of chats. Each page has room for 13 chats. Matching colored triangles mark chats that belong to the same session.
+- **Press Manage → Compact Chats** to close empty slots and bring the most recent chats to the first page. Otherwise, chats keep their keys as their status changes. Archiving a chat frees its key.
 
-Chats fill empty slots when they appear and keep the same key as their title, status, or activity changes. Archived or removed chats free their slots. Slot assignments stay in memory for the lifetime of the plugin.
+## Connect another machine
 
-Press **Manage**, then **Compact Chats** at the top left to close gaps, sort by most recent activity, and return to the first chat bank. When a chat has no timestamp, the sort uses its session’s last update. **Back to Chats** returns to your current bank.
+Remote chats use Dev Tunnels. Connect to the same tunnel in Stream Deck to see live status and in VS Code to open chats when you press a key.
 
-When a remote tunnel requires sign-in, its chats are hidden and **Manage** becomes **Remote Sign in**. Press it and finish signing in through your browser. The key uses your last successful sign-in provider, with GitHub as the default for existing setups. The plugin reconnects to the saved tunnel and restores the chats and **Manage** when the remote Agent Host responds. You can cancel a pending sign-in in the **More** key's settings.
+1. **On the remote machine**, open the Agents window in the VS Code instance that owns your chats. Open the antenna menu, choose **Dev Tunnels**, and sign in. Leave the machine awake and VS Code running. [VS Code remote session guide](https://code.visualstudio.com/docs/agents/run/remote-agent-sessions#_make-a-host-available-for-remote-access)
+2. **On the Stream Deck PC**, open the VS Code Agents window and choose the tunnel under **Dev Tunnels** in the environment picker. Open an existing chat to check that you can see the conversation.
+3. **On the Stream Deck PC**, install Microsoft’s Dev Tunnels CLI if needed. Run `winget install Microsoft.devtunnel` in PowerShell.
+4. **In the Stream Deck desktop app**, click the bottom-right **More** key on the **Copilot Sessions** profile to open its settings. Choose **Sign in with Microsoft (Entra)** or **Sign in with GitHub**, using the account that shared the tunnel. If you’re already signed in to the CLI, choose **Find tunnels**.
+5. Select the tunnel or enter its ID, then choose **Connect**. Remote chats appear alongside local chats with a link icon. To forget the saved tunnel, choose **Disconnect** in the same settings.
 
-When a session has two or more chats on the profile, their keys share a colored triangle in the bottom-right corner, even across banks. The triangle disappears when only one chat from that session is on the profile.
+## If something isn’t working
 
-Keep VS Code open and use the **Copilot** harness. The keys follow unarchived sessions from the connected local VS Code desktop Agent Host and reconnect when the host restarts. The separate **Copilot → Copilot Session Status** action continues to follow the most recently updated session.
+| What you see | What to check |
+| --- | --- |
+| **Offline** | The plugin can’t reach VS Code. Check that VS Code is open. For remote chats, check that the remote machine is awake and still sharing the tunnel. The plugin retries automatically. |
+| **No session** | VS Code is connected. Start a Copilot chat or restore one from the archive. |
+| **Remote Sign in** | Press the key and finish signing in through your browser. If sign-in stalls, use **Cancel sign-in** in the **More** key’s settings and try again. |
+| A remote key shows the title, but tapping it doesn’t open the chat | Connect to the same tunnel in the VS Code Agents window on the Stream Deck PC. |
 
-## Remote sessions over Dev Tunnels
+## Appendix for developers
 
-1. On the remote machine, open the Agents window in the VS Code instance that has your sessions. Choose **Remote Connections → Dev Tunnels**, sign in, and leave VS Code running.
-2. On the home PC, choose **Dev Tunnels** from the Agents window's environment picker. Connect to the remote tunnel and open an existing session to confirm it shows the original conversation.
-3. On the home PC, install Microsoft's Dev Tunnels CLI with `winget install Microsoft.devtunnel` if needed. In the **Stream Deck desktop app**, select **Copilot Sessions** and click the bottom-right **More** key to open its settings.
-4. Choose **Sign in with Microsoft (Entra)** or **Sign in with GitHub** and use the same account that shared the tunnel. If sign-in stalls, choose **Cancel sign-in** to try again. If the CLI is already signed in, choose **Find tunnels**. Select the remote tunnel or enter its tunnel ID, then choose **Connect**.
+### Run from a checkout
 
-The plugin saves the tunnel ID in Stream Deck's settings and starts the CLI in the background. The CLI keeps its own sign-in in the Windows credential store. The plugin selects the editor Agent Host shared by the remote machine and subscribes to its live session summaries. Remote chats appear alongside local chats with a small link icon in the upper-right corner. If the tunnel goes offline, their titles dim and the offline icon appears. The plugin retries the connection automatically. Use **More** to reach later banks, and **Disconnect** in its settings to forget the tunnel.
-
-## Local development
-
-The plugin targets Stream Deck 6.8 with its bundled Node.js 20 runtime. The JavaScript runs directly. From this folder, install its dependency and link the plugin with Elgato’s CLI if you need to recreate the local setup.
+The plugin runs on Stream Deck’s bundled Node.js 20 runtime. From the repository root, use Elgato’s `streamdeck` CLI to link the plugin.
 
 ```powershell
 npm.cmd ci --prefix .\com.davidorn.copilot-status.sdPlugin --omit=optional --ignore-scripts
 streamdeck link .\com.davidorn.copilot-status.sdPlugin
-streamdeck restart com.davidorn.copilot-status
 ```
 
-With Stream Deck Developer Mode enabled, reload the plugin after an edit with `streamdeck restart com.davidorn.copilot-status` or `Start-Process 'streamdeck://plugins/restart/com.davidorn.copilot-status'`. With Developer Mode off, quit and reopen Stream Deck to reload the linked plugin.
+With Developer Mode on, run `streamdeck restart com.davidorn.copilot-status` after an edit. With Developer Mode off, quit and reopen Stream Deck. To run the tests in PowerShell, use `node --test (Get-ChildItem tests -Filter '*.test.cjs').FullName`.
 
-Run `python scripts/build-profile.py` after changing the bundled layout or plugin version. The profile archive is included in the plugin directory.
+### How it works
 
-GitHub Actions runs the tests and packages a downloadable Windows installer on pull requests and pushes to `main`. To publish a release, update the manifest version, rebuild and commit the profile, and push a matching tag such as `v0.2.0.0`. A successful tagged build attaches the installer to a GitHub Release.
+`agent-host.cjs` finds the local Agent Host in the default VS Code and Insiders locations and subscribes to session updates. `tunnel-client.cjs` runs Microsoft’s Dev Tunnels CLI in the background for remote sessions. Stream Deck saves the tunnel ID and sign-in provider. The CLI manages its own credentials.
 
-`agent-host.cjs` discovers Stable and Insiders editor endpoints in their default Windows locations, reads session summaries, and listens for updates. `session-board.cjs` keeps track of which session belongs in each slot, and `plugin.cjs` registers with Stream Deck and renders the visible keys. **Offline** means the plugin is waiting for an accessible editor Agent Host. **No session** means the connected host has no unarchived Copilot session.
+`session-board.cjs` assigns chats to keys for as long as the plugin is running. `plugin.cjs` draws the keys and handles presses. `chat-link.cjs` builds the VS Code link for the selected chat.
+
+### Build and release
+
+Run `python scripts/build-profile.py` after changing the bundled layout or the plugin version. Commit the updated profile with the change.
+
+GitHub Actions runs the tests and packages the Windows installer on pull requests and pushes to `main`. To publish a release, update the manifest version, rebuild and commit the profile, and push a matching tag such as `v0.2.0.0`. The tagged build attaches the installer to a GitHub Release.
