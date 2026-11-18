@@ -2,8 +2,8 @@ const { createHash } = require('node:crypto');
 
 const slotsPerBank = 13;
 const groupPalette = [
-    '#f4ca64', '#8ee0b6', '#c4a3ff', '#ffad85', '#86dceb',
-    '#f2a9d5', '#c9df80', '#e5d0af', '#a4b5ff', '#f795ab',
+    '#ffd400', '#00e676', '#b24dff', '#ff7800', '#00d9ff',
+    '#ff39d4', '#a8f000', '#ff453a', '#4d8dff', '#ff4081',
 ];
 
 function sessionKey(session) {

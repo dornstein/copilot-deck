@@ -117,8 +117,8 @@ test('the board uses visible chat summaries and supports sessions from older hos
     const board = new SessionBoard();
     board.update([session, legacy].flatMap(sessionChats));
 
-    assert.equal(board.sessionAt(0, 0), main);
-    assert.equal(board.sessionAt(0, 1), nested);
+    assert.deepEqual(board.sessionAt(0, 0), { ...main, title: 'Untitled conversation' });
+    assert.deepEqual(board.sessionAt(0, 1), { ...nested, title: 'Untitled conversation' });
     assert.deepEqual([0, 1, 2, 3].map((slot) => sessionStatus(board.sessionAt(0, slot))),
         ['Idle', 'Running', 'Unknown', 'Running']);
     assert.equal(board.sessionAt(0, 4), undefined);
@@ -165,7 +165,7 @@ test('the unread dot uses the chat read bit and appears only on idle keys', () =
     }
 });
 
-test('remote keys keep the same title and show the tunnel icon on every pulse frame', () => {
+test('remote keys reserve space for the lower-right tunnel icon on every pulse frame', () => {
     const title = 'Improving checks display in merge section';
     const local = decodeImage(sessionKeyImage(title, 'Running'));
     const remote = decodeImage(sessionKeyImage(title, 'Running', 0, { remote: true }));
@@ -173,19 +173,21 @@ test('remote keys keep the same title and show the tunnel icon on every pulse fr
     const icon = /<path d="M9 7H7/;
     assert.match(remote, icon);
     assert.doesNotMatch(local, icon);
-    assert.deepEqual(titleLines(remote), titleLines(local));
+    assert.equal(titleLines(remote).join(' '), titleLines(local).join(' '));
+    assert.match(remote, /translate\(54 57\)/);
+    assert.ok(Array.from(remote.matchAll(/<text x="5" y="(\d+)"/g), ([, y]) => Number(y)).at(-1) <= 58);
     assert.equal(peak, remote.replace('#133a72', '#2864ac'));
     assert.match(decodeImage(sessionKeyImage(title, 'Offline', 0, { remote: true })), icon);
 });
 
 test('the group triangle clears the title and keeps its color through a pulse', () => {
     const title = 'A long title that needs to wrap and leave the session group marker readable';
-    const groupColor = '#c4a3ff';
+    const groupColor = '#b24dff';
     const options = { groupColor, remote: true };
     const idle = decodeImage(sessionKeyImage(title, 'Idle', 0, { ...options, unread: true }));
     const running = decodeImage(sessionKeyImage(title, 'Running', 0, options));
     const peak = decodeImage(sessionKeyImage(title, 'Running', 1600, options));
-    const triangle = `<polygon points="59,69 68,60 68,69" fill="${groupColor}"/>`;
+    const triangle = `<polygon points="59,2 68,2 68,11" fill="${groupColor}"/>`;
     for (const image of [idle, running, peak]) {
         assert.ok(image.includes(triangle));
         assert.match(image, /<path d="M9 7H7/);

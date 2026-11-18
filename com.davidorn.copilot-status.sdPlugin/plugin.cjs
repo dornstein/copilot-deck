@@ -1,12 +1,17 @@
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const WebSocket = require('ws');
 const { isUnreadChat, sessionChats, sessionStatus, watchCopilotSessions } = require('./agent-host.cjs');
+const { applicationForChat } = require('./app-origin.cjs');
 const { chatLink } = require('./chat-link.cjs');
+const { getEdgeProfiles } = require('./edge-profiles.cjs');
 const { SessionBoard, slotsPerBank } = require('./session-board.cjs');
 const { chatDetailsImage, isPulsingStatus, sessionKeyImage } = require('./session-key.cjs');
-const { listTunnels, signIn, validTunnelId, watchManagedTunnel } = require('./tunnel-client.cjs');
+const {
+    getTunnelAccount, githubDeviceSignInUrl, listTunnels, normalizeGitHubUsername,
+    signIn, validTunnelId, verifyGitHubAccount, watchManagedTunnel,
+} = require('./tunnel-client.cjs');
 
 const pluginId = 'com.davidorn.copilot-status';
 const actions = { latest: `${pluginId}.session`, slot: `${pluginId}.slot`, more: `${pluginId}.more` };
@@ -61,14 +66,22 @@ let pulseTimer;
 let idleAgeTimer;
 let tunnelId = '';
 let tunnelProvider = 'github';
+let tunnelGitHubUsername = '';
+let githubBrowserProfile = '';
 let tunnelMonitor;
 let tunnelTask = Promise.resolve();
+let tunnelState = 'unconfigured';
 let tunnelStatus = 'Choose a remote tunnel.';
 let tunnelRecovery;
 let inspectorContext;
 let inspectorOperation;
 let inspectorNotice = '';
+let githubCodeExpired = false;
+let githubVerificationUsername = '';
+let tunnelAccount = { status: 'checking' };
+let accountCheck;
 let tunnels = [];
+let edgeProfiles = [];
 
 function displayFor(key, chat) {
     if (key.action === actions.latest) {
@@ -84,8 +97,9 @@ function displayFor(key, chat) {
     const managing = devicesInManagementMode.has(key.device);
     if (key.action === actions.slot && key.slot === modeSlot) {
         if (tunnelRecovery === 'sign-in-required') {
-            const signingIn = Boolean(inspectorOperation?.provider);
-            return { title: '', chatTitle: signingIn ? 'Finish in browser' : 'Remote Sign in', status: 'Sign in' };
+            const chatTitle = tunnelProvider === 'github' ? 'Sign in on PC'
+                : inspectorOperation?.provider ? 'Signing in' : 'Remote Sign in';
+            return { title: '', chatTitle, status: 'Sign in' };
         }
         if (tunnelRecovery === 'connecting') {
             return { title: '', chatTitle: 'Remote connecting', status: 'Starting' };
@@ -111,12 +125,14 @@ function displayFor(key, chat) {
         if (key.detailsChat) {
             return { title: '', image: chatDetailsImage(chat, { remote, tunnelName: remoteHost.name }) };
         }
-        const status = (remote ? remoteHost : local).connected ? sessionStatus(chat) : 'Offline';
+        const status = (remote ? remoteHost : local).connected ? sessionStatus(chat)
+            : remote && ['connecting', 'waiting', 'loading'].includes(tunnelState) ? 'Starting' : 'Offline';
         return {
             title: '',
             image: images[status],
             chatTitle: typeof chat.title === 'string' ? chat.title : 'Copilot',
             remote,
+            application: chat.application,
             status,
             unread: status === 'Idle' && isUnreadChat(chat),
             idleSince: status === 'Idle' ? chat.idleSince : undefined,
@@ -126,6 +142,9 @@ function displayFor(key, chat) {
     }
 
     if (!tunnelRecovery && bank === 0 && key.slot === 0 && !local.chats.length && !remoteHost.chats.length) {
+        if (tunnelId && ['connecting', 'waiting', 'loading'].includes(tunnelState)) {
+            return { title: '', chatTitle: tunnelState === 'loading' ? 'Loading chats' : 'Connecting', status: 'Starting' };
+        }
         const status = local.connected || remoteHost.connected ? 'No session' : 'Offline';
         return { title: labels[status], image: images[status] };
     }
@@ -133,10 +152,10 @@ function displayFor(key, chat) {
 }
 
 function sendImage(key, context) {
-    const { image, chatTitle, status, pulseStart, remote, unread, groupColor, idleAge } = key;
+    const { image, chatTitle, status, pulseStart, remote, unread, groupColor, idleAge, application } = key;
     const elapsed = pulseStart === undefined ? 0 : performance.now() - pulseStart;
     const renderedImage = chatTitle !== undefined || pulseStart !== undefined
-        ? sessionKeyImage(chatTitle, status, elapsed, { remote, unread, groupColor, idleAge })
+        ? sessionKeyImage(chatTitle, status, elapsed, { remote, unread, groupColor, idleAge, application })
         : keyImages[image] ?? image;
     socket.send(JSON.stringify({
         event: 'setImage', context, payload: { image: renderedImage, target: 0 },
@@ -184,12 +203,12 @@ function render(key, context) {
     const chat = chatAtKey(key);
     if (key.press && !sameChat(key.press.chat, chat)) key.press = undefined;
     if (key.detailsChat && !sameChat(key.detailsChat, chat)) key.detailsChat = undefined;
-    const { title, image, chatTitle, status, remote, unread, groupColor, idleSince, log } = displayFor(key, chat);
+    const { title, image, chatTitle, status, remote, unread, groupColor, idleSince, application, log } = displayFor(key, chat);
     key.idleSince = idleSince;
     const idleAge = formatIdleAge(idleSince, Date.now());
     if (title === key.title && image === key.image && chatTitle === key.chatTitle
         && status === key.status && remote === key.remote && unread === key.unread
-        && groupColor === key.groupColor && idleAge === key.idleAge) return;
+        && groupColor === key.groupColor && idleAge === key.idleAge && application === key.application) return;
     key.title = title;
     key.image = image;
     key.chatTitle = chatTitle;
@@ -197,6 +216,7 @@ function render(key, context) {
     key.remote = remote;
     key.unread = unread;
     key.groupColor = groupColor;
+    key.application = application;
     key.idleAge = idleAge;
     if (isPulsingStatus(status)) {
         key.pulseStart ??= performance.now();
@@ -223,6 +243,7 @@ function updateSource(source, catalogue, urlProtocol) {
         const now = Date.now();
         source.chats = catalogue.flatMap((session) => sessionChats(session).map((chat) => ({
             ...chat,
+            application: applicationForChat(session, chat),
             source: source.source,
             urlProtocol,
             sessionResource: session.resource,
@@ -264,6 +285,13 @@ function sameChat(previous, current) {
         && previous.resource === current.resource && previous.sessionResource === current.sessionResource;
 }
 
+function openWindowsUri(uri, onError) {
+    const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    execFile(powershell, ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:COPILOT_DECK_URI -ErrorAction Stop'],
+        { windowsHide: true, env: { ...process.env, COPILOT_DECK_URI: uri }, timeout: 10_000 },
+        (error) => { if (error) onError(); });
+}
+
 function openChat(chat, context) {
     const url = chatLink(chat, {
         urlProtocol: chat.urlProtocol,
@@ -275,27 +303,30 @@ function openChat(chat, context) {
     if (!url) return showAlert();
 
     // Open the registered Windows URI handler directly, without a browser redirect.
-    const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    execFile(powershell, ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:COPILOT_DECK_CHAT_URL -ErrorAction Stop'],
-        { windowsHide: true, env: { ...process.env, COPILOT_DECK_CHAT_URL: url }, timeout: 10_000 },
-        (error) => { if (error) showAlert(); });
+    openWindowsUri(url, showAlert);
 }
 
-function handleKeyDown(key) {
+function handleKeyDown(key, context) {
     const { action, device, slot } = key;
     const managing = devicesInManagementMode.has(device);
     if (action === actions.slot && slot === modeSlot) {
         if (tunnelRecovery) {
-            if (tunnelRecovery === 'sign-in-required') void refreshTunnels(tunnelProvider, true);
+            if (tunnelRecovery === 'sign-in-required') {
+                openWindowsUri('streamdeck://open/mainwindow', () => {
+                    socket.send(JSON.stringify({ event: 'showAlert', context }));
+                });
+                if (tunnelProvider === 'github' && tunnelGitHubUsername) {
+                    void refreshTunnels('github', { githubUsername: tunnelGitHubUsername });
+                } else if (tunnelProvider === 'microsoft') {
+                    void refreshTunnels('microsoft', { fromDeck: true });
+                }
+            }
             return;
         }
         if (managing) devicesInManagementMode.delete(device);
         else devicesInManagementMode.add(device);
     } else if (managing && action === actions.slot && slot === compactSlot) {
-        board.compact();
-        deviceBanks.delete(device);
-        devicesInManagementMode.delete(device);
-        renderBoard();
+        compactChats(device);
         return;
     } else if (!managing && action === actions.more && board.bankCount > 1) {
         const bank = deviceBanks.get(device) ?? 0;
@@ -311,6 +342,18 @@ function handleKeyDown(key) {
     visibleKeys.forEach((visibleKey, context) => {
         if (visibleKey.device === device) render(visibleKey, context);
     });
+}
+
+function compactChats(device) {
+    board.compact();
+    if (device) {
+        deviceBanks.delete(device);
+        devicesInManagementMode.delete(device);
+    } else {
+        deviceBanks.clear();
+        devicesInManagementMode.clear();
+    }
+    renderBoard();
 }
 
 function handleKeyUp(key, context) {
@@ -332,30 +375,49 @@ function sendInspectorStatus() {
     socket.send(JSON.stringify({
         event: 'sendToPropertyInspector', context: inspectorContext,
         payload: {
-            tunnelId, tunnelStatus, tunnels, notice: inspectorNotice,
+            tunnelId, tunnelState, tunnelStatus, tunnelProvider, tunnelAccount, tunnels, notice: inspectorNotice,
+            tunnelName: remoteHost.name, remoteChatCount: remoteHost.chats.length,
             busy: Boolean(inspectorOperation), signingIn: Boolean(inspectorOperation?.provider),
+            githubUsername: tunnelGitHubUsername, githubVerificationUsername, githubCode: inspectorOperation?.githubCode,
+            githubCodeDeadline: inspectorOperation?.githubCodeDeadline, githubCodeExpired,
+            requestingGitHubCode: inspectorOperation?.provider === 'github' && !inspectorOperation.githubCode
+                && (inspectorOperation.renew || !inspectorOperation.controller.signal.aborted && !inspectorOperation.verifying),
+            edgeProfiles, githubBrowserProfile,
         },
     }));
 }
 
-function saveTunnelSettings(id) {
+async function refreshTunnelAccount() {
+    if (!inspectorContext || monitor.signal.aborted) return;
+    accountCheck?.abort();
+    accountCheck = new AbortController();
+    const signal = AbortSignal.any([accountCheck.signal, monitor.signal]);
+    const account = await getTunnelAccount(signal);
+    if (signal.aborted) return;
+    tunnelAccount = account;
+    sendInspectorStatus();
+}
+
+function saveTunnelSettings(id, tunnelName = id === tunnelId ? remoteHost.name : undefined) {
     socket.send(JSON.stringify({
-        event: 'setGlobalSettings', context: uuid, payload: { tunnelId: id, tunnelProvider },
+        event: 'setGlobalSettings', context: uuid,
+        payload: { tunnelId: id, tunnelName, tunnelProvider, tunnelGitHubUsername, githubBrowserProfile },
     }));
 }
 
-function configureTunnel(id, reconnect = false) {
+function configureTunnel(id, reconnect = false, name) {
     if (id === tunnelId && !reconnect) return;
     tunnelMonitor?.abort();
     if (id !== tunnelId) {
         remoteHost.chats = [];
-        remoteHost.name = undefined;
+        remoteHost.name = name;
         tunnelRecovery = undefined;
     } else if (tunnelRecovery) {
         tunnelRecovery = 'connecting';
     }
     updateSource(remoteHost, null);
     tunnelId = id;
+    tunnelState = id ? 'connecting' : 'unconfigured';
     tunnelStatus = id ? 'Connecting to the remote machine…' : 'Choose a remote tunnel.';
     sendInspectorStatus();
     if (!id) return;
@@ -367,8 +429,12 @@ function configureTunnel(id, reconnect = false) {
     if (!remoteHost.name) {
         void listTunnels(signal).then((found) => {
             if (signal.aborted) return;
-            remoteHost.name = found.find((tunnel) => tunnel.id === id)?.name;
-            if (remoteHost.name) renderBoard();
+            remoteHost.name = found.find((tunnel) => tunnel.id === id || `${tunnel.id}.${tunnel.clusterId}` === id)?.name;
+            if (remoteHost.name) {
+                saveTunnelSettings(id);
+                sendInspectorStatus();
+                renderBoard();
+            }
         }).catch(() => {}); // The connection can work even if listing tunnels fails.
     }
     tunnelTask = tunnelTask.then(async () => {
@@ -377,7 +443,13 @@ function configureTunnel(id, reconnect = false) {
             if (!signal.aborted) updateSource(remoteHost, catalogue);
         }, (status, state) => {
             if (signal.aborted) return;
+            const enteredSignInRequired = state === 'sign-in-required' && tunnelState !== state;
+            if (tunnelState !== state && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ event: 'logMessage', payload: { message: `Remote tunnel state: ${state}` } }));
+            }
+            tunnelState = state;
             tunnelStatus = status;
+            renderBoard();
             if (state === 'sign-in-required') {
                 tunnelRecovery = state;
                 devicesInManagementMode.clear();
@@ -390,71 +462,157 @@ function configureTunnel(id, reconnect = false) {
                 renderBoard();
             }
             sendInspectorStatus();
-        }, signal);
+            if (enteredSignInRequired && !inspectorOperation) void refreshTunnelAccount();
+        }, signal, tunnelProvider === 'github' ? tunnelGitHubUsername : undefined);
     }).catch(() => {
         if (signal.aborted) return;
         if (tunnelRecovery) tunnelRecovery = 'offline';
+        tunnelState = 'offline';
         updateSource(remoteHost, null);
         tunnelStatus = 'Could not connect to the remote machine.';
         sendInspectorStatus();
     });
 }
 
-async function refreshTunnels(provider, fromDeck = false) {
+function openGitHubSignIn(browserProfile) {
+    const operation = inspectorOperation;
+    const reportError = (message) => {
+        if (inspectorOperation !== operation) return;
+        inspectorNotice = message;
+        sendInspectorStatus();
+    };
+    if (browserProfile) {
+        const edge = getEdgeProfiles();
+        edgeProfiles = edge.profiles;
+        if (!edge.profiles.some(({ directory }) => directory === browserProfile)) {
+            reportError('That Edge profile is unavailable. Choose a browser profile and try again.');
+            return;
+        }
+        const child = spawn(edge.executable, [`--profile-directory=${browserProfile}`, githubDeviceSignInUrl], {
+            detached: true, stdio: 'ignore', windowsHide: true,
+        });
+        child.once('error', () => reportError('Couldn’t open GitHub in the selected Edge profile.'));
+        child.unref();
+    } else {
+        openWindowsUri(githubDeviceSignInUrl, () => reportError('Couldn’t open GitHub in your default browser.'));
+    }
+    githubBrowserProfile = browserProfile;
+    inspectorNotice = '';
+    saveTunnelSettings(tunnelId);
+    sendInspectorStatus();
+}
+
+async function refreshTunnels(provider, { fromDeck = false, githubUsername = '' } = {}) {
     if (inspectorOperation || monitor.signal.aborted) return;
     const operation = { provider, controller: new AbortController() };
     inspectorOperation = operation;
     const savedTunnel = tunnelId;
     const signal = AbortSignal.any([monitor.signal, operation.controller.signal]);
-    inspectorNotice = provider ? 'Finish in your browser, or cancel to try again.' : 'Finding tunnels…';
+    inspectorNotice = provider === 'microsoft' ? 'Signing in with your Windows work account…'
+        : provider === 'github' ? 'Requesting a GitHub sign-in code…' : 'Finding tunnels…';
+    if (provider) {
+        githubCodeExpired = false;
+        tunnelAccount = { status: 'checking' };
+    }
+    if (provider === 'github') githubVerificationUsername = githubUsername;
     renderBoard();
     sendInspectorStatus();
     try {
         if (provider) {
-            await signIn(provider, signal);
+            await signIn(provider, signal, (code, deadline) => {
+                if (signal.aborted) return;
+                operation.githubCode = code;
+                operation.githubCodeDeadline = deadline;
+                inspectorNotice = '';
+                sendInspectorStatus();
+                void refreshTunnelAccount();
+            });
             if (signal.aborted) return;
+            operation.githubCode = undefined;
+            if (provider === 'github') {
+                operation.verifying = true;
+                inspectorNotice = `Checking GitHub sign-in for @${githubUsername}…`;
+                sendInspectorStatus();
+                await verifyGitHubAccount(githubUsername, signal);
+                if (signal.aborted) return;
+                tunnelGitHubUsername = githubUsername;
+            }
+            inspectorNotice = fromDeck ? '' : 'Finding tunnels…';
             tunnelProvider = provider;
             saveTunnelSettings(tunnelId);
             if (savedTunnel && savedTunnel === tunnelId) configureTunnel(tunnelId, true);
-            if (fromDeck) {
-                inspectorNotice = '';
-                return;
-            }
+            if (fromDeck) return;
+            sendInspectorStatus();
+        } else if (tunnelProvider === 'github' && tunnelGitHubUsername) {
+            await verifyGitHubAccount(tunnelGitHubUsername, signal);
+            if (signal.aborted) return;
         }
         const found = await listTunnels(signal);
         if (signal.aborted) return;
         tunnels = found;
-        inspectorNotice = tunnels.length ? 'Select the tunnel you use in VS Code.' : 'No VS Code tunnels found for this account.';
+        remoteHost.name ??= found.find((tunnel) => tunnel.id === tunnelId || `${tunnel.id}.${tunnel.clusterId}` === tunnelId)?.name;
+        inspectorNotice = tunnelState === 'connected' ? ''
+            : tunnels.length ? 'Select the tunnel you use in VS Code.' : 'No VS Code tunnels found for this account.';
     } catch (error) {
         if (signal.aborted) return;
         tunnels = [];
-        inspectorNotice = error.message;
+        githubCodeExpired = provider === 'github' && error.code === 'SIGN_IN_TIMEOUT';
+        inspectorNotice = githubCodeExpired ? '' : error.message;
     } finally {
         if (inspectorOperation === operation) {
             inspectorOperation = undefined;
             renderBoard();
-            sendInspectorStatus();
+            if (operation.renew) {
+                void refreshTunnels('github', { githubUsername });
+            } else {
+                sendInspectorStatus();
+                void refreshTunnelAccount();
+            }
         }
     }
 }
 
 function handleInspector(message) {
     inspectorContext = message.context;
-    const { command, provider, id } = message.payload ?? {};
-    if (command === 'list' || (command === 'signIn' && signInProviders.has(provider))) {
-        void refreshTunnels(command === 'signIn' ? provider : undefined);
-    } else if (command === 'cancelSignIn' && inspectorOperation?.provider) {
-        const { controller } = inspectorOperation;
-        inspectorOperation = undefined;
-        controller.abort();
-        inspectorNotice = 'Sign-in canceled. You can try again.';
-        renderBoard();
+    const { command, provider, id, browserProfile, githubUsername: inputUsername } = message.payload ?? {};
+    const githubUsername = normalizeGitHubUsername(inputUsername);
+    if (command === 'status') {
+        edgeProfiles = getEdgeProfiles().profiles;
         sendInspectorStatus();
-    } else if ((command === 'connect' && validTunnelId(id)) || command === 'disconnect') {
-        const nextId = command === 'connect' ? id : '';
+        void refreshTunnelAccount();
+    } else if (command === 'list' || (command === 'signIn' && provider === 'microsoft')) {
+        void refreshTunnels(command === 'signIn' ? provider : undefined);
+    } else if (command === 'signIn' && provider === 'github' && githubUsername) {
+        void refreshTunnels('github', { githubUsername });
+    } else if (command === 'openGitHubSignIn' && inspectorOperation?.githubCode
+        && Date.now() < inspectorOperation.githubCodeDeadline) {
+        openGitHubSignIn(typeof browserProfile === 'string' ? browserProfile : '');
+    } else if (command === 'renewGitHubCode' && inspectorOperation?.githubCode) {
+        inspectorOperation.renew = true;
+        inspectorOperation.githubCode = undefined;
+        inspectorOperation.controller.abort();
+        inspectorNotice = 'Requesting a new GitHub code…';
+        sendInspectorStatus();
+    } else if (command === 'renewGitHubCode' && !inspectorOperation && githubCodeExpired && githubVerificationUsername) {
+        void refreshTunnels('github', { githubUsername: githubVerificationUsername });
+    } else if (command === 'cancelSignIn' && inspectorOperation?.provider) {
+        inspectorOperation.renew = false;
+        inspectorOperation.githubCode = undefined;
+        inspectorOperation.controller.abort();
+        inspectorNotice = 'Sign-in canceled. You can try again.';
+        sendInspectorStatus();
+    } else if (command === 'retry' && !inspectorOperation && tunnelId) {
         inspectorNotice = '';
-        saveTunnelSettings(nextId);
-        configureTunnel(nextId, true);
+        configureTunnel(tunnelId, true);
+    } else if (command === 'compactChats') {
+        compactChats(visibleKeys.get(message.context)?.device);
+    } else if (!inspectorOperation && (command === 'disconnect' || (command === 'connect' && validTunnelId(id)))) {
+        const nextId = command === 'connect' ? id : '';
+        githubCodeExpired = false;
+        inspectorNotice = '';
+        const name = nextId === tunnelId ? remoteHost.name : tunnels.find((tunnel) => tunnel.id === nextId)?.name;
+        saveTunnelSettings(nextId, name);
+        configureTunnel(nextId, true, name);
     } else {
         sendInspectorStatus();
     }
@@ -476,9 +634,13 @@ socket.on('message', (frame) => {
         return;
     }
     if (message?.event === 'didReceiveGlobalSettings') {
-        const { tunnelId: id, tunnelProvider: provider } = message.payload?.settings ?? {};
+        const settings = message.payload?.settings ?? {};
+        const { tunnelId: id, tunnelProvider: provider, tunnelGitHubUsername: githubUsername } = settings;
         tunnelProvider = signInProviders.has(provider) ? provider : 'github';
-        configureTunnel(validTunnelId(id) ? id : '');
+        tunnelGitHubUsername = normalizeGitHubUsername(githubUsername);
+        githubBrowserProfile = typeof settings.githubBrowserProfile === 'string' ? settings.githubBrowserProfile : '';
+        const name = typeof settings.tunnelName === 'string' ? settings.tunnelName : undefined;
+        configureTunnel(validTunnelId(id) ? id : '', false, name);
         return;
     }
     if (message?.event === 'deviceDidDisconnect') {
@@ -490,7 +652,7 @@ socket.on('message', (frame) => {
         return;
     }
     if (!actionIds.has(message?.action) || typeof message.context !== 'string') return;
-    if (message.action === actions.more) {
+    if (message.action === actions.more || message.action === actions.slot) {
         if (message.event === 'sendToPlugin') {
             handleInspector(message);
             return;
@@ -511,7 +673,7 @@ socket.on('message', (frame) => {
     } else if (message.event === 'keyDown' || message.event === 'keyUp') {
         const key = visibleKeys.get(message.context);
         if (!key) return;
-        if (message.event === 'keyDown') handleKeyDown(key);
+        if (message.event === 'keyDown') handleKeyDown(key, message.context);
         else handleKeyUp(key, message.context);
     }
 });

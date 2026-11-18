@@ -23,7 +23,7 @@ test('Dev Tunnel reads per-chat idle timestamps and follows chat-only status upd
         updates.push(sessions?.flatMap(sessionChats).map(sessionStatus) ?? null);
         if (sessions) times.push(sessions.flatMap(sessionChats).map((chat) => chat.idleModifiedAt));
         if (updates.length === 1) catalogueReady();
-        if (updates.length === 3) client.close();
+        if (updates.length === 2) client.close();
         if (!sessions) monitor.abort();
     }, monitor.signal, server.address().port);
     const [client, upgrade] = await once(server, 'connection', { signal: t.signal });
@@ -50,7 +50,6 @@ test('Dev Tunnel reads per-chat idle timestamps and follows chat-only status upd
         { resource: 'ahp-session:/one', provider: 'copilotcli', status: 40, defaultChat: main.resource, chats: [main, nested] },
         { resource: 'ahp-session:/archived', provider: 'copilotcli', status: 64 },
     ] } });
-    await initialCatalogue;
     const timing = await receive();
     assert.equal(timing.method, 'subscribe');
     assert.equal(timing.params.channel, 'ahp-session:/one');
@@ -61,6 +60,7 @@ test('Dev Tunnel reads per-chat idle timestamps and follows chat-only status upd
     const unsubscribe = await receive();
     assert.equal(unsubscribe.method, 'unsubscribe');
     assert.equal(unsubscribe.params.channel, timing.params.channel);
+    await initialCatalogue;
     const keepAlive = once(client, 'ping', { signal: t.signal });
     t.mock.timers.tick(10_000);
     await keepAlive;
@@ -69,6 +69,6 @@ test('Dev Tunnel reads per-chat idle timestamps and follows chat-only status upd
         params: { channel: 'ahp-root://', session: 'ahp-session:/one', changes: { chats: [main, { ...nested, status: 16 }] } },
     });
     await watcher;
-    assert.deepEqual(updates, [['Idle', 'Running'], ['Idle', 'Running'], ['Idle', 'Needs input'], null]);
-    assert.deepEqual(times, [[undefined, undefined], [modifiedAt, undefined], [modifiedAt, undefined]]);
+    assert.deepEqual(updates, [['Idle', 'Running'], ['Idle', 'Needs input'], null]);
+    assert.deepEqual(times, [[modifiedAt, undefined], [modifiedAt, undefined]]);
 });

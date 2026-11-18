@@ -9,6 +9,35 @@ const status = { idle: 1, error: 2, running: 8, waiting: 16, read: 32, archived:
 const tunnelProtocolVersions = ['1.0.0', '0.9.0'];
 const tunnelKeepAliveMs = 10_000;
 
+function genericTitle(title) {
+    return typeof title !== 'string' || /^(?:session|new session|copilot)?$/i.test(title.trim());
+}
+
+function hasDraftContent(draft) {
+    if (!draft) return false;
+    if (typeof draft !== 'object') return true;
+    // Model/origin alone are composer defaults, not an unsent message.
+    return (typeof draft.text === 'string' ? !!draft.text.trim() : draft.text != null)
+        || Object.entries(draft).some(([key, value]) =>
+        !['text', 'origin', 'model'].includes(key) && value != null
+        && (!Array.isArray(value) || value.length > 0));
+}
+
+function chatEvidence(state) {
+    // Keep only metadata; never cache conversation text or attachments.
+    return {
+        title: state.title, status: state.status, modifiedAt: state.modifiedAt,
+        hasDraft: hasDraftContent(state.draft),
+        empty: sessionStatus(state) === 'Idle' && Array.isArray(state.turns) && state.turns.length === 0
+            && !state.activeTurn && !hasDraftContent(state.draft)
+            && (!state.canvases || (Array.isArray(state.canvases) && state.canvases.length === 0)),
+    };
+}
+
+function hasChanges(changes) {
+    return changes && Object.values(changes).some((value) => typeof value === 'number' && value > 0);
+}
+
 async function discoverEndpoints() {
     const endpoints = [];
     for (const product of ['Code', 'Code - Insiders']) {
@@ -41,7 +70,10 @@ function sessionChats(session) {
     // Older hosts only send the session summary.
     if (!Array.isArray(session.chats)) return [session];
     return session.chats.filter((chat) => typeof chat?.resource === 'string'
-        && chat.interactivity !== 'hidden' && !(chat.status & status.archived));
+        && chat.interactivity !== 'hidden' && !(chat.status & status.archived) && !chat.deckEmpty)
+        .map((chat) => ({ ...chat, title: !genericTitle(chat.title) ? chat.title
+            : !genericTitle(session.title) ? session.title
+                : chat.deckHasDraft ? 'Unsent draft' : 'Untitled conversation' }));
 }
 
 function sessionStatus(session) {
@@ -58,7 +90,7 @@ function isUnreadChat(chat) {
     return Number.isInteger(chat?.status) && (chat.status & status.read) === 0;
 }
 
-function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = false) {
+function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = false, onConnected) {
     const socket = new WebSocket(url, {
         handshakeTimeout: throughTunnel ? 10_000 : 2000,
         maxPayload: 8 * 1024 * 1024,
@@ -68,6 +100,8 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
     const pendingChanges = [];
     const sessionTiming = new WeakMap();
     const timingRequests = new Map();
+    const evidence = new Map();
+    const evidenceRequests = new Map();
     const catalogueEvents = new Set(['root/sessionAdded', 'root/sessionRemoved', 'root/sessionSummaryChanged']);
     let listRequestId = 2;
     let timingRequestId = 0;
@@ -75,6 +109,10 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
     let selecting = throughTunnel;
     let selectedId;
     let keepAlive;
+    let refreshEvidence;
+    let published = false;
+    let initialInspectionDeadline;
+    let initialInspectionExpired = false;
     const deadline = setTimeout(() => socket.terminate(), throughTunnel ? 15_000 : 5000);
     const abort = () => socket.terminate();
     signal.addEventListener('abort', abort, { once: true });
@@ -130,6 +168,8 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
     }
 
     function publishCatalogue() {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        const liveChats = new Set();
         const catalogue = copilotSessions(sessions).map((session) => {
             const chats = session.chats;
             if (!Array.isArray(chats) || !chats.length) return session;
@@ -138,8 +178,10 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
                 timing = { requested: new Set(), times: new Map() };
                 sessionTiming.set(session, timing);
             }
-            const missing = sessionChats(session).filter((chat) => sessionStatus(chat) === 'Idle'
-                && !Number.isFinite(Date.parse(chat.modifiedAt)) && !timing.requested.has(chat.resource));
+            const missing = chats.filter((chat) => chat && !genericTitle(chat.title)
+                && chat.interactivity !== 'hidden' && !(chat.status & status.archived)
+                && (chat.status === undefined || (sessionStatus(chat) === 'Idle'
+                    && !Number.isFinite(Date.parse(chat.modifiedAt)))) && !timing.requested.has(chat.resource));
             if (missing.length && timingRequests.size < 4 && !timing.pending) {
                 missing.forEach((chat) => timing.requested.add(chat.resource));
                 timing.pending = true;
@@ -149,11 +191,60 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
                 request(id, 'subscribe', { channel: session.resource });
             }
             return { ...session, chats: chats.map((chat) => {
+                if (!chat || typeof chat.resource !== 'string') return chat;
+                liveChats.add(chat.resource);
                 const idleModifiedAt = timing.times.get(chat?.resource);
-                return idleModifiedAt ? { ...chat, idleModifiedAt } : chat;
+                if (!genericTitle(chat.title) || chat.interactivity === 'hidden' || (chat.status & status.archived)) {
+                    return { ...chat, status: chat.status ?? timing.details?.get(chat.resource)?.status,
+                        idleModifiedAt };
+                }
+                const signature = JSON.stringify([session.modifiedAt, session.title, session.changes, chat]);
+                let entry = evidence.get(chat.resource);
+                if (!entry || entry.signature !== signature) {
+                    entry = { signature };
+                    evidence.set(chat.resource, entry);
+                }
+                if (!entry.pending && (!entry.checkedAt || Date.now() - entry.checkedAt > 60_000)
+                    && evidenceRequests.size < 4
+                    && !Array.from(evidenceRequests.values()).some(p => p.channel === chat.resource)) {
+                    entry.pending = true;
+                    const id = listRequestId + ++timingRequestId;
+                    const timeout = setTimeout(() => finishEvidenceRequest(id), 20_000);
+                    evidenceRequests.set(id, { channel: chat.resource, entry, timeout });
+                    request(id, 'subscribe', { channel: chat.resource });
+                }
+                const details = entry.details;
+                // A title alone is never evidence of emptiness. Active work and changes stay visible.
+                const resolved = { ...chat, ...details, status: chat.status ?? details?.status,
+                    idleModifiedAt: details?.modifiedAt ?? idleModifiedAt };
+                return { ...resolved, deckHasDraft: details?.hasDraft,
+                    deckEmpty: details?.empty === true && genericTitle(resolved.title)
+                        && genericTitle(session.title) && sessionStatus(resolved) === 'Idle'
+                        && !hasChanges(chat.changes) && !hasChanges(session.changes) };
             }) };
         });
+        for (const resource of evidence.keys()) if (!liveChats.has(resource)) evidence.delete(resource);
+        // Give fast inspections a chance to avoid placeholder flashes. Slow metadata must
+        // never hold the connection or the entire board hostage; retain uncertain entries.
+        if (!published && !initialInspectionExpired && (evidenceRequests.size || timingRequests.size)) return;
+        published = true;
+        clearTimeout(initialInspectionDeadline);
         publish(catalogue);
+    }
+
+    function finishEvidenceRequest(id, snapshot) {
+        const pending = evidenceRequests.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        evidenceRequests.delete(id);
+        pending.entry.pending = false;
+        pending.entry.checkedAt = Date.now();
+        if (snapshot?.resource === pending.channel && snapshot.state?.resource === pending.channel) {
+            pending.entry.details = chatEvidence(snapshot.state);
+        }
+        if (socket.readyState !== WebSocket.OPEN) return;
+        socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'unsubscribe', params: { channel: pending.channel } }));
+        publishCatalogue();
     }
 
     function finishTimingRequest(id, snapshot) {
@@ -167,7 +258,9 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
         // Only session metadata is needed. Drop the subscription after its snapshot.
         socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'unsubscribe', params: { channel } }));
         if (snapshot?.resource === channel && Array.isArray(snapshot.state?.chats)) {
+            timing.details ??= new Map();
             for (const chat of snapshot.state.chats) {
+                timing.details.set(chat.resource, { status: chat.status });
                 if (typeof chat?.resource === 'string' && Number.isFinite(Date.parse(chat.modifiedAt))) {
                     timing.times.set(chat.resource, chat.modifiedAt);
                 }
@@ -201,6 +294,10 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
             finishTimingRequest(message.id, message.result?.snapshot);
             return;
         }
+        if (ready && evidenceRequests.has(message.id)) {
+            finishEvidenceRequest(message.id, message.result?.snapshot);
+            return;
+        }
         if (!ready && message.id === listRequestId) {
             const catalogue = message.result?.items ?? message.result?.sessions;
             if (!Array.isArray(catalogue)) {
@@ -218,6 +315,12 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
             pendingChanges.length = 0;
             ready = true;
             clearTimeout(deadline);
+            onConnected?.();
+            initialInspectionDeadline = setTimeout(() => {
+                initialInspectionExpired = true;
+                publishCatalogue();
+            }, 3000);
+            refreshEvidence = setInterval(publishCatalogue, 30_000);
             if (throughTunnel) {
                 // Keep the relay open even when there are no catalogue updates.
                 keepAlive = setInterval(() => {
@@ -238,8 +341,11 @@ function followEndpoint(url, protocolVersions, publish, signal, throughTunnel = 
     return new Promise((resolve) => {
         socket.once('close', () => {
             clearTimeout(deadline);
+            clearTimeout(initialInspectionDeadline);
             clearInterval(keepAlive);
+            clearInterval(refreshEvidence);
             for (const { timeout } of timingRequests.values()) clearTimeout(timeout);
+            for (const { timeout } of evidenceRequests.values()) clearTimeout(timeout);
             signal.removeEventListener('abort', abort);
             resolve(ready);
         });
@@ -261,10 +367,10 @@ async function watchCopilotSessions(publish, signal) {
     }
 }
 
-async function watchDevTunnelSessions(publish, signal, port = 31546) {
+async function watchDevTunnelSessions(publish, signal, port = 31546, onConnected) {
     const url = `ws://localhost:${port}/agent-host/select`;
     while (!signal.aborted) {
-        const connected = await followEndpoint(url, tunnelProtocolVersions, publish, signal, true);
+        const connected = await followEndpoint(url, tunnelProtocolVersions, publish, signal, true, onConnected);
         if (connected && !signal.aborted) publish(null);
         await delay(5000, undefined, { signal }).catch(() => {});
     }

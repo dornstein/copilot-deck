@@ -3,49 +3,126 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Remote tunnel</title>
+    <title>Remote sessions</title>
     <style>
-        :root { color-scheme: dark; font: 13px "Segoe UI", sans-serif; }
-        body { margin: 12px; color: #e7e7e7; background: #2d2d2d; }
-        fieldset { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
-        legend { margin-bottom: 8px; padding: 0; font-weight: 600; }
-        p { margin: 0; }
-        .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
-        button, input, select { font: inherit; color: inherit; border: 1px solid #737373; border-radius: 4px; background: #383838; padding: 5px 8px; }
-        input, select { box-sizing: border-box; width: 100%; min-width: 0; }
-        button:enabled { cursor: pointer; }
-        button:disabled { opacity: .55; }
-        button[type="submit"]:enabled { background: #154e82; }
-        :focus-visible { outline: 2px solid #85c6ff; outline-offset: 1px; }
-        #notice { color: #c8c8c8; }
-        [hidden] { display: none; }
+        :root { color-scheme: dark; font: 13px/1.35 "Segoe UI", sans-serif; }
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 8px; color: #f3f5fa; background: #2d2d2d; }
+        form { padding: 14px; border: 1px solid #454953; border-radius: 10px; background: #232529; box-shadow: 0 4px 12px #00000018; }
+        [hidden] { display: none !important; }
+        fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+        h1, p { margin: 0; }
+        h1 { font-size: 20px; line-height: 1.2; letter-spacing: -.025em; font-weight: 650; }
+        header { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; justify-content: space-between; }
+        .account { margin-top: 9px; overflow-wrap: anywhere; }
+        .account span { display: block; margin-bottom: 2px; color: #b8c0ce; font-size: 12px; }
+        .account strong { font-weight: 600; }
+        .computer { display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap; padding-top: 12px; }
+        .machine { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+        .badge { padding: 2px 7px; border-radius: 10px; background: #45464b; color: #f4f5f8; font-size: 11px; font-weight: 600; }
+        .badge[data-tone="attention"] { background: #533923; color: #ffdbab; }
+        .badge[data-tone="checking"] { background: #263b56; color: #c4dbff; }
+        .badge[data-tone="good"] { background: #244332; color: #bef2d0; }
+        .content { border-top: 1px solid #393d46; margin-top: 11px; padding-top: 11px; }
+        .buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+        button, input, select { font: inherit; color: inherit; border: 1px solid #454953; border-radius: 6px; background: #2a2d34; padding: 5px 8px; min-height: 30px; }
+        button:enabled, summary { cursor: pointer; }
+        button:enabled:hover { background: #454b56; }
+        button:disabled { opacity: .6; }
+        .primary { background: #adc8ff; border-color: #adc8ff; color: #122348; font-weight: 600; }
+        .primary:enabled:hover { background: #c4d7ff; }
+        .quiet { background: transparent; border-color: transparent; color: #b8d5ff; }
+        :focus-visible { outline: 2px solid #9ac9ff; outline-offset: 1px; }
+        #connection-message, #notice { margin-bottom: 6px; color: #e1e4eb; }
+        #github-target { margin-bottom: 5px; overflow-wrap: anywhere; }
+        .code-row { flex-wrap: wrap; gap: 5px 7px; padding: 6px; margin-bottom: 5px; background: #2a2d34; border-radius: 7px; }
+        #github-code { min-width: 0; width: 114px; flex: 1; border: 0; font: 19px/1.2 Consolas, monospace; letter-spacing: .02em; padding-inline: 3px; }
+        #github-copy { white-space: nowrap; }
+        #github-time { color: #ffdbab; font-size: 11px; font-variant-numeric: tabular-nums; margin-bottom: 4px; }
+        .verification-actions { margin-top: 5px; }
+        #copy-feedback { color: #d1d5de; margin-top: 4px; }
+        details { margin-top: 6px; }
+        summary { width: fit-content; max-width: 100%; min-height: 25px; padding-block: 4px; color: #b8d5ff; }
+        #connection-details { border-top: 1px solid #393d46; margin-top: 10px; padding-top: 5px; }
+        #connection-details > summary { color: #e1e4eb; }
+        #github-account { margin-top: 6px; }
+        #new-sign-in-note { margin: 5px 0; color: #d1d5de; }
+        label { display: grid; gap: 3px; margin: 5px 0; }
+        input:not(#github-code), select { width: 100%; min-width: 0; }
+        .layout { border-top: 1px solid #393d46; margin-top: 6px; padding-top: 5px; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+        .layout > span { color: #b8c0ce; font-size: 12px; }
+        #compact { padding-right: 0; }
+        @media (max-width: 320px) {
+            form { padding: 10px; }
+            h1 { font-size: 18px; }
+        }
     </style>
 </head>
 <body>
     <form>
         <fieldset disabled>
-            <legend>Remote tunnel</legend>
-            <p>Use the account that shared the tunnel.</p>
-            <div class="buttons">
-                <button id="microsoft" type="button">Sign in with Microsoft (Entra)</button>
-                <button id="github" type="button">Sign in with GitHub</button>
-                <button id="find" type="button">Find tunnels</button>
-                <button id="cancel-sign-in" type="button" hidden>Cancel sign-in</button>
+            <header>
+                <h1>Remote sessions</h1>
+            </header>
+            <div class="computer">
+                <p class="machine" id="machine" hidden></p>
+                <span id="connection-badge" class="badge" role="status" hidden></span>
             </div>
-            <label id="tunnel-picker" hidden>
-                Available tunnels
-                <select id="tunnels"></select>
-            </label>
-            <label>
-                Tunnel ID
-                <input id="tunnel-id" type="text" pattern="[A-Za-z0-9][A-Za-z0-9.\-]{0,126}" required maxlength="127" spellcheck="false" autocomplete="off">
-            </label>
-            <div class="buttons">
-                <button id="connect" type="submit" disabled>Connect</button>
-                <button id="disconnect" type="button" disabled>Disconnect</button>
-            </div>
-            <p id="status" role="status">Loading tunnel settings…</p>
-            <p id="notice" role="status" hidden></p>
+            <p class="account" id="account-status" role="status"><span id="account-label">Dev Tunnels account</span> <strong id="account-name">Checking…</strong></p>
+
+            <section class="content" aria-label="Remote connection">
+                <div id="github-verification" hidden>
+                    <p id="github-target" role="status"></p>
+                    <div class="buttons code-row" id="github-code-row" hidden>
+                        <input id="github-code" aria-label="GitHub verification code" readonly spellcheck="false" autocomplete="off">
+                        <button id="github-copy" type="button">Copy code</button>
+                    </div>
+                    <p id="github-time" hidden></p>
+                    <div class="buttons verification-actions">
+                        <button id="github-open" class="primary" type="button" hidden>Open GitHub</button>
+                        <button id="github-renew" type="button">Renew code</button>
+                        <button id="cancel-sign-in" class="quiet" type="button" hidden>Cancel</button>
+                    </div>
+                    <p id="copy-feedback" role="status" hidden></p>
+                    <details id="github-browser-options" hidden>
+                        <summary>Browser profile</summary>
+                        <label for="github-browser">Open GitHub in<select id="github-browser"></select></label>
+                    </details>
+                </div>
+                <p id="notice" role="status" hidden></p>
+                <div id="connection-summary">
+                    <p id="connection-message" hidden></p>
+                    <div class="buttons">
+                        <button id="primary-action" class="primary" type="button" hidden></button>
+                        <button id="cancel-other-sign-in" class="quiet" type="button" hidden>Cancel sign-in</button>
+                    </div>
+                </div>
+            </section>
+
+            <details id="connection-details">
+                <summary>Connection details</summary>
+                <div class="buttons">
+                    <button id="github" type="button" aria-expanded="false" aria-controls="github-account">Choose GitHub account</button>
+                    <button id="microsoft" type="button">Windows work sign-in</button>
+                </div>
+                <div id="github-account" hidden>
+                    <label for="github-username">GitHub username<input id="github-username" type="text" maxlength="65" spellcheck="false" autocomplete="off"></label>
+                    <p id="new-sign-in-note" hidden>Starting a new sign-in clears the current Dev Tunnels login.</p>
+                    <button id="github-continue" class="primary" type="button" disabled>Continue with GitHub</button>
+                </div>
+                <label id="tunnel-picker" hidden>
+                    Available computers
+                    <select id="tunnels"></select>
+                </label>
+                <label for="tunnel-id">Tunnel ID<input id="tunnel-id" type="text" pattern="[A-Za-z0-9][A-Za-z0-9.\-]{0,126}" required maxlength="127" spellcheck="false" autocomplete="off"></label>
+                <div class="buttons">
+                    <button id="find" type="button">Find computers</button>
+                    <button id="connect" type="submit" disabled>Connect</button>
+                    <button id="disconnect" type="button" disabled>Disconnect</button>
+                </div>
+            </details>
+            <footer class="layout"><span>Deck layout</span><button id="compact" class="quiet" type="button">Compact chats</button></footer>
+            <span id="compact-status" role="status"></span>
         </fieldset>
     </form>
     <script src="tunnel-settings.js"></script>

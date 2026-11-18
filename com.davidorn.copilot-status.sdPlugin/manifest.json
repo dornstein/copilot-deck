@@ -28,6 +28,7 @@
     {
       "Name": "Copilot Session Slot",
       "UUID": "com.davidorn.copilot-status.slot",
+      "PropertyInspectorPath": "tunnel-settings.html",
       "Icon": "images/action",
       "VisibleInActionsList": false,
       "Controllers": ["Keypad"],

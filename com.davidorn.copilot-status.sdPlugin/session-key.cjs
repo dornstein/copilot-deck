@@ -15,9 +15,20 @@ const pulseColors = new Map([
     ['Running', { dark: [19, 58, 114], bright: [40, 100, 172] }],
     ['Needs input', { dark: [88, 23, 37], bright: [181, 45, 67] }],
 ]);
-const tunnelIcon = `<g transform="translate(54 0) scale(.58)" fill="none" stroke="#e1edff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+const tunnelIcon = `<g transform="translate(54 57) scale(.58)" fill="none" stroke="#e1edff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
     <path d="M9 7H7a5 5 0 0 0 0 10h2m6-10h2a5 5 0 0 1 0 10h-2M8 12h8"/>
 </g>`;
+
+// Small, simplified application marks drawn for the key's 72px coordinate space.
+const applicationIcons = new Map([
+    ['vscode', `<g data-app="vscode" transform="translate(5 58) scale(.75)">
+        <path fill="#28a9f5" d="M11.5 0 16 2v12l-4.5 2L4.8 10.4 1.8 13 0 12V4l1.8-1 3 2.6ZM2 5.5v5L4.2 8Zm4.6 2.5 4.9 4V4Z"/>
+    </g>`],
+    ['copilot', `<g data-app="copilot" transform="translate(5 58) scale(.75)" fill="none" stroke="#f2f5fa" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 7v5c3 3 9 3 12 0V7M2 8H.7v3H2m12-3h1.3v3H14"/>
+        <path d="M7.7 4.5C7.7 2 6.4 1.4 4 1.8 2.2 2 1.8 3 1.8 4.8s.7 2.5 2.7 2.5c2.2 0 3.2-1 3.2-2.8Zm.6 0C8.3 2 9.6 1.4 12 1.8c1.8.2 2.2 1.2 2.2 3s-.7 2.5-2.7 2.5c-2.2 0-3.2-1-3.2-2.8ZM6 9v2m4-2v2"/>
+    </g>`],
+]);
 
 // Segoe UI advance widths, measured at 100px for printable ASCII on Windows.
 const asciiWidths = [
@@ -31,7 +42,7 @@ const asciiWidths = [
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const titleTop = 13;
 const titleHeight = 56;
-const groupedTitleHeight = 47;
+const footerTitleHeight = 47;
 
 function glyphs(text) {
     return Array.from(segmenter.segment(text), ({ segment }) => ({
@@ -116,16 +127,17 @@ function isPulsingStatus(status) {
     return pulseColors.has(status);
 }
 
-function sessionKeyImage(title, status, elapsedMs = 0, { remote = false, unread = false, groupColor, idleAge } = {}) {
+function sessionKeyImage(title, status, elapsedMs = 0, { remote = false, unread = false, groupColor, idleAge, application } = {}) {
     const colors = pulseColors.get(status);
     const background = colors ? pulseBackground(colors, elapsedMs) : '#161b26';
     const icon = status === 'Idle' && unread ? unreadDot : statusIcons[status] ?? '';
     const age = status === 'Idle' && idleAge
         ? `<text x="36" y="11" text-anchor="middle" fill="#c4cfdf" font-family="Segoe UI" font-size="9">${escapeXml(idleAge)}</text>`
         : '';
-    const triangle = groupColor ? `<polygon points="59,69 68,60 68,69" fill="${groupColor}"/>` : '';
+    const triangle = groupColor ? `<polygon points="59,2 68,2 68,11" fill="${groupColor}"/>` : '';
     const titleColor = status === 'Offline' ? '#b8c3d4' : '#f2f5fa';
-    const titleArea = groupColor ? groupedTitleHeight : titleHeight;
+    const applicationIcon = applicationIcons.get(application) ?? '';
+    const titleArea = remote || applicationIcon ? footerTitleHeight : titleHeight;
     const image = `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 72 72">
         <rect width="72" height="72" fill="${background}"/>
         ${title === undefined ? '' : icon}
@@ -133,6 +145,7 @@ function sessionKeyImage(title, status, elapsedMs = 0, { remote = false, unread 
         ${age}
         ${title === undefined ? '' : titleMarkup(title, titleColor, titleArea)}
         ${triangle}
+        ${applicationIcon}
     </svg>`;
     return `data:image/svg+xml,${encodeURIComponent(image)}`;
 }

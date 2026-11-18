@@ -35,8 +35,17 @@ test('chat keys toggle details, open on tap, and show age while idle on the fron
 
     let updateLocal;
     let updateRemote;
+    let reportRemote;
     t.mock.method(agentHost, 'watchCopilotSessions', async (publish) => { updateLocal = publish; });
-    t.mock.method(tunnelClient, 'watchManagedTunnel', async (_id, publish) => { updateRemote = publish; });
+    t.mock.method(tunnelClient, 'watchManagedTunnel', async (_id, publish, report) => {
+        updateRemote = publish;
+        reportRemote = report;
+    });
+    t.mock.method(tunnelClient, 'getTunnelAccount', async () => ({ status: 'signed-out' }));
+    const login = t.mock.method(tunnelClient, 'signIn', async (_provider, signal, onCode) => {
+        onCode('ABCD-1234', Date.now() + 240000);
+        await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    });
     t.mock.method(tunnelClient, 'listTunnels', async () => [{ id: 'deck-host', name: 'Work PC' }]);
     require(plugin);
     socket.emit('open');
@@ -60,6 +69,7 @@ test('chat keys toggle details, open on tap, and show age while idle on the fron
     };
     const remote = {
         resource: 'ahp-session:/remote', project: { displayName: 'App & repo' },
+        _meta: { 'vscode.session.initiator': { name: 'vscode' } },
         modifiedAt: '2026-11-13T18:00:00Z', defaultChat: main.resource, chats: [main, nested],
     };
     updateLocal([local], 'vscode-insiders');
@@ -74,6 +84,15 @@ test('chat keys toggle details, open on tap, and show age while idle on the fron
     assert.equal(labels('main'), '12m Remote main');
     assert.match(image('main'), /<circle cx="8" cy="7"/);
     assert.match(image('main'), /<path d="M9 7H7/);
+    assert.match(image('main'), /data-app="vscode"/);
+    assert.match(image('nested'), /data-app="vscode"/);
+    // An origin-only change must invalidate the key image cache, including pulsing keys.
+    updateRemote([{ ...remote, _meta: { 'vscode.session.initiator': { name: 'github/autopilot' } } }]);
+    assert.match(image('main'), /data-app="copilot"/);
+    assert.match(image('nested'), /data-app="copilot"/);
+    updateRemote([{ ...remote, _meta: { 'vscode.session.initiator': { name: 'unknown' } } }]);
+    assert.doesNotMatch(image('main'), /data-app=/);
+    updateRemote([remote]);
     t.mock.timers.tick(60_000);
     assert.equal(labels('main'), '13m Remote main');
 
@@ -81,7 +100,7 @@ test('chat keys toggle details, open on tap, and show age while idle on the fron
     assert.equal(open.mock.callCount(), 0);
     clock += 549;
     key('keyUp', 'local', 0);
-    assert.match(open.mock.calls[0].arguments[2].env.COPILOT_DECK_CHAT_URL, /^vscode-insiders:.*\/local\?/);
+    assert.match(open.mock.calls[0].arguments[2].env.COPILOT_DECK_URI, /^vscode-insiders:.*\/local\?/);
 
     key('keyDown', 'nested', 2);
     clock += 550;
@@ -97,7 +116,7 @@ test('chat keys toggle details, open on tap, and show age while idle on the fron
 
     key('keyDown', 'nested', 2);
     key('keyUp', 'nested', 2);
-    assert.match(open.mock.calls[1].arguments[2].env.COPILOT_DECK_CHAT_URL, /\/remote\/chat\/nested\?/);
+    assert.match(open.mock.calls[1].arguments[2].env.COPILOT_DECK_URI, /\/remote\/chat\/nested\?/);
     assert.equal(labels('nested'), 'Work PC App &amp; repo Side chat');
 
     key('keyDown', 'nested', 2);
@@ -138,4 +157,26 @@ test('chat keys toggle details, open on tap, and show age while idle on the fron
     t.mock.timers.setTime(Date.parse('2026-11-19T18:00:00Z'));
     key('willAppear', 'main', 1);
     assert.equal(labels('main'), '6d Remote main');
+
+    // Selecting the recovery key in the desktop app exposes the same inspector as More.
+    send('didReceiveGlobalSettings', { payload: { settings: {
+        tunnelId: 'deck-host', tunnelProvider: 'github', tunnelGitHubUsername: 'work_user',
+    } } });
+    reportRemote('Sign in required.', 'sign-in-required');
+    key('willAppear', 'manage', 10);
+    send('sendToPlugin', { action: actionPrefix + '.slot', context: 'manage', payload: { command: 'status' } });
+    await Promise.resolve();
+    assert.ok(output.some(message => message.event === 'sendToPropertyInspector' && message.context === 'manage'));
+    const manifest = require(pluginPath + '/manifest.json');
+    assert.equal(manifest.Actions.find(action => action.UUID === actionPrefix + '.slot').PropertyInspectorPath, 'tunnel-settings.html');
+
+    // Physical presses open the app and start exactly one GitHub code request.
+    key('keyDown', 'manage', 10);
+    key('keyDown', 'manage', 10);
+    assert.equal(login.mock.callCount(), 1);
+    assert.equal(login.mock.calls[0].arguments[0], 'github');
+    assert.equal(open.mock.calls.at(-1).arguments[2].env.COPILOT_DECK_URI, 'streamdeck://open/mainwindow');
+    const inspector = output.findLast(message => message.event === 'sendToPropertyInspector');
+    assert.equal(inspector.payload.githubCode, 'ABCD-1234');
+    assert.equal(inspector.payload.githubVerificationUsername, 'work_user');
 });
